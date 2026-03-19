@@ -1,0 +1,61 @@
+import serial
+import matplotlib.pyplot as plt
+from collections import deque
+from datetime import datetime
+import csv
+
+SERIAL_PORT = '/dev/cu.usbmodem11401'   
+BAUD_RATE = 115200
+THRESHOLD = 444
+
+arduino = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+
+live_values = deque([43] * 100, maxlen=100)
+
+csv_file = open("sound_events.csv", "w", newline="")
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow(["Time", "Sound Level"])
+
+plt.ion()
+fig, ax = plt.subplots()
+
+x_vals = list(range(100))
+line_live, = ax.plot(x_vals, list(live_values), label="Live Sound")
+line_thresh = ax.axhline(THRESHOLD, linestyle="--", label="Threshold")
+
+ax.set_title("Live Sound Monitor")
+ax.set_xlabel("Recent Samples")
+ax.set_ylabel("Sound Level")
+ax.set_ylim(0, 100)
+ax.legend()
+
+try:
+    while True:
+        line = arduino.readline().decode(errors="ignore").strip()
+
+        if line.isdigit():
+            sound_level = int(line)
+
+            live_values.append(sound_level)
+            line_live.set_ydata(list(live_values))
+
+            max_y = max(max(live_values), THRESHOLD) + 5
+            if max_y < 60:
+                max_y = 60
+            ax.set_ylim(0, max_y)
+
+            if sound_level > THRESHOLD:
+                current_time = datetime.now().strftime("%H:%M:%S")
+                csv_writer.writerow([current_time, sound_level])
+                csv_file.flush()
+
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+            plt.pause(0.001)
+
+except KeyboardInterrupt:
+    print("Program stopped.")
+
+finally:
+    csv_file.close()
+    arduino.close()
