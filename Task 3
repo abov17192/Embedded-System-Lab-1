@@ -1,0 +1,123 @@
+#include <Wire.h>
+#include <uRTCLib.h>
+
+uRTCLib rtc(0x68);
+
+int digitPins[4] = {4, 5, 2, 3};
+
+int segmentPins[8] = {6, 7, 8, 9, 10, 11, 12, A1};
+
+const int buttonPin = A0;
+const int greenLedPin = A2; 
+const int redLed = A3; 
+
+byte numbers[10][8] = {
+  {1,1,1,1,1,1,0,0},
+  {0,1,1,0,0,0,0,0},
+  {1,1,0,1,1,0,1,0},
+  {1,1,1,1,0,0,1,0},
+  {0,1,1,0,0,1,1,0},
+  {1,0,1,1,0,1,1,0},
+  {1,0,1,1,1,1,1,0},
+  {1,1,1,0,0,0,0,0},
+  {1,1,1,1,1,1,1,0},
+  {1,1,1,1,0,1,1,0}
+};
+
+int counter = 0;
+byte lastSecond = 0;
+bool gameStarted = false;
+
+bool buttonPressedEvent() {
+  static bool lastState = HIGH;
+  static unsigned long lastDebounceTime = 0;
+  bool currentState = digitalRead(buttonPin);
+
+  if (currentState != lastState) {
+    lastDebounceTime = millis();
+    lastState = currentState;
+  }
+
+  if ((millis() - lastDebounceTime) > 50) {
+    static bool armed = true;
+    if (currentState == LOW && armed) {
+      armed = false;
+      return true;
+    }
+    if (currentState == HIGH) armed = true;
+  }
+  return false;
+}
+
+void setup() {
+  Wire.begin();
+  pinMode(buttonPin, INPUT_PULLUP);
+  pinMode(greenLedPin, OUTPUT);
+  pinMode(redLed, OUTPUT);
+
+  for (int i = 0; i < 8; i++) pinMode(segmentPins[i], OUTPUT);
+  for (int i = 0; i < 4; i++) {
+    pinMode(digitPins[i], OUTPUT);
+    digitalWrite(digitPins[i], HIGH);
+  }
+}
+
+void loop() {
+  bool pressed = buttonPressedEvent();
+
+  if (!gameStarted) {
+    displayTwoDigits(0);
+    if (pressed) {
+      gameStarted = true;
+      counter = 0;
+      rtc.refresh();
+      lastSecond = rtc.second();
+    }
+    return;
+  }
+
+  rtc.refresh();
+  byte currentSecond = rtc.second();
+
+  if (currentSecond != lastSecond) {
+    lastSecond = currentSecond;
+    counter++;
+    if (counter > 10) counter = 0;
+  }
+
+  if (pressed) {
+    if (counter == 10) {
+      digitalWrite(greenLedPin, HIGH);
+      digitalWrite(redLed, LOW);
+    } else {
+      digitalWrite(redLed, HIGH);
+      digitalWrite(greenLedPin, LOW);
+    }
+
+    unsigned long feedbackTimer = millis();
+    
+    while(millis() - feedbackTimer < 1000) {
+      displayTwoDigits(counter);
+    }
+
+    digitalWrite(greenLedPin, LOW);
+    digitalWrite(redLed, LOW);
+    counter = 0;
+    gameStarted = false;
+  }
+
+  displayTwoDigits(counter);
+}
+
+void showDigit(int value, int digitIndex) {
+  for (int i = 0; i < 4; i++) digitalWrite(digitPins[i], HIGH);
+  for (int i = 0; i < 8; i++) digitalWrite(segmentPins[i], numbers[value][i]);
+  digitalWrite(digitPins[digitIndex], LOW);
+  delay(5);
+  digitalWrite(digitPins[digitIndex], HIGH);
+}
+
+void displayTwoDigits(int num) {
+  if (num >= 10) showDigit(num / 10, 2);
+  showDigit(num % 10, 3);
+}
