@@ -1,0 +1,63 @@
+#include <Arduino.h>
+#include <LiquidCrystal.h>
+
+#define SOUND_ANALOG A0
+#define SOUND_DIGITAL 2
+#define LED_PIN 7
+
+LiquidCrystal lcd(12, 11, 5, 4, 3, 6);
+
+volatile bool soundDetected = false;
+
+unsigned long ledStartTime = 0;
+const unsigned long ledDuration = 500;
+bool ledState = false;
+
+unsigned long lastSerialTime = 0;
+const unsigned long serialInterval = 20;
+
+void soundISR() {
+  soundDetected = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(SOUND_ANALOG, INPUT);
+  pinMode(SOUND_DIGITAL, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  digitalWrite(LED_PIN, LOW);
+
+  lcd.begin(16, 2);
+  lcd.clear();
+
+  attachInterrupt(digitalPinToInterrupt(SOUND_DIGITAL), soundISR, RISING);
+}
+
+void loop() {
+  int soundLevel = analogRead(SOUND_ANALOG);
+
+  lcd.setCursor(0, 0);
+  lcd.print("Sound Level:    ");
+  lcd.setCursor(0, 1);
+  lcd.print(soundLevel);
+  lcd.print("      ");
+
+  if (millis() - lastSerialTime >= serialInterval) {
+    lastSerialTime = millis();
+    Serial.println(soundLevel);
+  }
+
+  if (soundDetected) {
+    soundDetected = false;
+    digitalWrite(LED_PIN, HIGH);
+    ledState = true;
+    ledStartTime = millis();
+  }
+
+  if (ledState && millis() - ledStartTime >= ledDuration) {
+    digitalWrite(LED_PIN, LOW);
+    ledState = false;
+  }
+}
