@@ -20,11 +20,6 @@ void loop() {
   int xValue = analogRead(xPin);
   int yValue = analogRead(yPin);
 
-  Serial.print("X:");
-  Serial.print(xValue);
-  Serial.print(" Y:");
-  Serial.println(yValue);
-
   digitalWrite(upLED, LOW);
   digitalWrite(downLED, LOW);
   digitalWrite(leftLED, LOW);
