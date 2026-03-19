@@ -1,0 +1,489 @@
+import sys
+import time
+import serial
+from serial.tools import list_ports
+
+from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont
+from PyQt6.QtWidgets import (
+    QApplication,
+    QWidget,
+    QPushButton,
+    QLabel,
+    QComboBox,
+    QMessageBox,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
+    QFrame,
+)
+
+
+class VisualizationWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.x_value = 512
+        self.y_value = 512
+        self.setMinimumSize(340, 340)
+
+    def update_values(self, x, y):
+        self.x_value = x
+        self.y_value = y
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect().adjusted(20, 20, -20, -20)
+
+        painter.setPen(QPen(QColor("#3b4252"), 2))
+        painter.setBrush(QBrush(QColor("#161b22")))
+        painter.drawRoundedRect(rect, 18, 18)
+
+        center_x = rect.center().x()
+        center_y = rect.center().y()
+
+        grid_pen = QPen(QColor("#2d3748"), 1)
+        painter.setPen(grid_pen)
+
+        for i in range(1, 4):
+            x = rect.left() + i * rect.width() / 4
+            y = rect.top() + i * rect.height() / 4
+            painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom()))
+            painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
+
+        axis_pen = QPen(QColor("#4fd1c5"), 2)
+        painter.setPen(axis_pen)
+        painter.drawLine(int(rect.left()), int(center_y), int(rect.right()), int(center_y))
+        painter.drawLine(int(center_x), int(rect.top()), int(center_x), int(rect.bottom()))
+
+        px = rect.left() + (self.x_value / 1023.0) * rect.width()
+        py = rect.top() + (self.y_value / 1023.0) * rect.height()
+
+        glow_color = QColor(0, 255, 200, 70)
+        painter.setBrush(QBrush(glow_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRectF(px - 16, py - 16, 32, 32))
+
+        painter.setBrush(QBrush(QColor("#00ffd0")))
+        painter.setPen(QPen(QColor("#b2fff4"), 2))
+        painter.drawEllipse(QRectF(px - 7, py - 7, 14, 14))
+
+
+class DirectionBox(QFrame):
+    def __init__(self, text=""):
+        super().__init__()
+        self.label = QLabel(text)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.label)
+        self.setLayout(layout)
+
+        self.setFixedSize(90, 90)
+        self.set_off()
+
+    def set_on(self):
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #00c896;
+                border: 2px solid #80ffe0;
+                border-radius: 18px;
+            }
+            QLabel {
+                color: #08120f;
+                font-size: 16px;
+                font-weight: 700;
+            }
+        """)
+
+    def set_off(self):
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #1c2330;
+                border: 2px solid #334155;
+                border-radius: 18px;
+            }
+            QLabel {
+                color: #cbd5e1;
+                font-size: 16px;
+                font-weight: 600;
+            }
+        """)
+
+
+class StatCard(QFrame):
+    def __init__(self, title, value):
+        super().__init__()
+        self.title_label = QLabel(title)
+        self.value_label = QLabel(value)
+
+        self.title_label.setStyleSheet("color: #94a3b8; font-size: 13px;")
+        self.value_label.setStyleSheet("color: white; font-size: 22px; font-weight: 700;")
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_label)
+        self.setLayout(layout)
+
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #111827;
+                border: 1px solid #263244;
+                border-radius: 16px;
+            }
+        """)
+
+    def set_value(self, text):
+        self.value_label.setText(text)
+
+
+class JoystickTester(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Lab Task 4 - Joystick Tester")
+        self.resize(1180, 760)
+
+        self.serial_port = None
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.read_serial)
+
+        self.running = False
+        self.x_value = 512
+        self.y_value = 512
+        self.current_direction = "CENTER"
+
+        self.last_rate_time = time.time()
+        self.sample_counter = 0
+        self.sample_rate = 0
+
+        self.setup_ui()
+        self.refresh_ports()
+        self.apply_main_style()
+
+    def setup_ui(self):
+        title = QLabel("LAB TASK 4")
+        title.setStyleSheet("font-size: 42px; font-weight: 800; color: white;")
+
+        subtitle = QLabel("Analogue Joystick Tester")
+        subtitle.setStyleSheet("font-size: 16px; color: #94a3b8;")
+
+        header_left = QVBoxLayout()
+        header_left.addWidget(title)
+        header_left.addWidget(subtitle)
+
+        self.live_badge = QLabel("IDLE")
+        self.live_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.live_badge.setFixedSize(120, 42)
+        self.live_badge.setStyleSheet("""
+            QLabel {
+                background-color: #334155;
+                color: white;
+                border-radius: 14px;
+                font-size: 16px;
+                font-weight: 700;
+                padding: 6px;
+            }
+        """)
+
+        header = QHBoxLayout()
+        header.addLayout(header_left)
+        header.addStretch()
+        header.addWidget(self.live_badge)
+
+        self.port_combo = QComboBox()
+        self.port_combo.setMinimumWidth(280)
+
+        self.refresh_button = QPushButton("Refresh Ports")
+        self.start_button = QPushButton("Start Test")
+
+        top_controls = QHBoxLayout()
+        top_controls.addWidget(QLabel("Serial Port:"))
+        top_controls.addWidget(self.port_combo)
+        top_controls.addWidget(self.refresh_button)
+        top_controls.addWidget(self.start_button)
+        top_controls.addStretch()
+
+        self.status_label = QLabel("Status: Not connected")
+        self.status_label.setStyleSheet("color: #cbd5e1; font-size: 14px;")
+
+        self.visual = VisualizationWidget()
+
+        visual_frame = QFrame()
+        visual_frame.setStyleSheet("""
+            QFrame {
+                background-color: #0b1220;
+                border: 1px solid #1f2a3a;
+                border-radius: 22px;
+            }
+        """)
+        visual_layout = QVBoxLayout()
+        visual_layout.setContentsMargins(18, 18, 18, 18)
+        visual_layout.setSpacing(12)
+
+        visual_title = QLabel("Data Visualization")
+        visual_title.setStyleSheet("font-size: 18px; font-weight: 700; color: white;")
+        visual_layout.addWidget(visual_title)
+        visual_layout.addWidget(self.visual)
+        visual_frame.setLayout(visual_layout)
+
+        self.x_card = StatCard("X Value", "512")
+        self.y_card = StatCard("Y Value", "512")
+        self.rate_card = StatCard("Sample Rate", "0 Hz")
+        self.dir_card = StatCard("Direction", "CENTER")
+
+        stats_grid = QGridLayout()
+        stats_grid.setSpacing(14)
+        stats_grid.addWidget(self.x_card, 0, 0)
+        stats_grid.addWidget(self.y_card, 0, 1)
+        stats_grid.addWidget(self.rate_card, 1, 0)
+        stats_grid.addWidget(self.dir_card, 1, 1)
+
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(16)
+        left_panel.addWidget(visual_frame)
+        left_panel.addLayout(stats_grid)
+
+        mapping_frame = QFrame()
+        mapping_frame.setStyleSheet("""
+            QFrame {
+                background-color: #0b1220;
+                border: 1px solid #1f2a3a;
+                border-radius: 22px;
+            }
+        """)
+        mapping_layout = QVBoxLayout()
+        mapping_layout.setContentsMargins(24, 24, 24, 24)
+        mapping_layout.setSpacing(18)
+
+        mapping_title = QLabel("Button Mapping")
+        mapping_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mapping_title.setStyleSheet("font-size: 20px; font-weight: 700; color: white;")
+
+        self.up_box = DirectionBox("UP")
+        self.down_box = DirectionBox("DOWN")
+        self.left_box = DirectionBox("LEFT")
+        self.right_box = DirectionBox("RIGHT")
+        self.center_box = DirectionBox("•")
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        grid.addWidget(self.up_box, 0, 1)
+        grid.addWidget(self.left_box, 1, 0)
+        grid.addWidget(self.center_box, 1, 1)
+        grid.addWidget(self.right_box, 1, 2)
+        grid.addWidget(self.down_box, 2, 1)
+
+        mapping_layout.addWidget(mapping_title)
+        mapping_layout.addSpacing(10)
+        mapping_layout.addLayout(grid)
+        mapping_layout.addStretch()
+        mapping_frame.setLayout(mapping_layout)
+
+        main_content = QHBoxLayout()
+        main_content.setSpacing(18)
+        main_content.addLayout(left_panel, 3)
+        main_content.addWidget(mapping_frame, 2)
+
+        root = QVBoxLayout()
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(18)
+        root.addLayout(header)
+        root.addLayout(top_controls)
+        root.addWidget(self.status_label)
+        root.addLayout(main_content)
+
+        self.setLayout(root)
+
+        self.refresh_button.clicked.connect(self.refresh_ports)
+        self.start_button.clicked.connect(self.toggle_test)
+
+    def apply_main_style(self):
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #07111f;
+                color: white;
+                font-family: Arial, Helvetica, sans-serif;
+            }
+
+            QLabel {
+                color: white;
+            }
+
+            QComboBox {
+                background-color: #111827;
+                border: 1px solid #334155;
+                border-radius: 12px;
+                padding: 10px 12px;
+                font-size: 15px;
+                color: white;
+            }
+
+            QComboBox::drop-down {
+                border: none;
+                width: 30px;
+            }
+
+            QPushButton {
+                background-color: #1d4ed8;
+                color: white;
+                border: none;
+                border-radius: 12px;
+                padding: 10px 16px;
+                font-size: 15px;
+                font-weight: 700;
+            }
+
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+
+            QPushButton:pressed {
+                background-color: #1e40af;
+            }
+        """)
+
+    def refresh_ports(self):
+        self.port_combo.clear()
+        ports = list(list_ports.comports())
+        for port in ports:
+            self.port_combo.addItem(port.device)
+
+    def toggle_test(self):
+        if self.running:
+            self.stop_test()
+        else:
+            self.start_test()
+
+    def start_test(self):
+        port_name = self.port_combo.currentText().strip()
+        if not port_name:
+            QMessageBox.warning(self, "No Port", "No serial port selected.")
+            return
+
+        try:
+            self.serial_port = serial.Serial(port_name, 9600, timeout=0.1)
+            time.sleep(2)
+
+            self.running = True
+            self.start_button.setText("Stop Test")
+            self.live_badge.setText("LIVE")
+            self.live_badge.setStyleSheet("""
+                QLabel {
+                    background-color: #00c896;
+                    color: #08120f;
+                    border-radius: 14px;
+                    font-size: 16px;
+                    font-weight: 800;
+                    padding: 6px;
+                }
+            """)
+            self.status_label.setText(f"Status: Connected to {port_name}")
+            self.timer.start(50)
+
+            self.last_rate_time = time.time()
+            self.sample_counter = 0
+            self.sample_rate = 0
+
+        except Exception as e:
+            QMessageBox.critical(self, "Connection Error", str(e))
+            self.serial_port = None
+            self.running = False
+
+    def stop_test(self):
+        self.timer.stop()
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+
+        self.serial_port = None
+        self.running = False
+        self.start_button.setText("Start Test")
+        self.live_badge.setText("IDLE")
+        self.live_badge.setStyleSheet("""
+            QLabel {
+                background-color: #334155;
+                color: white;
+                border-radius: 14px;
+                font-size: 16px;
+                font-weight: 700;
+                padding: 6px;
+            }
+        """)
+        self.status_label.setText("Status: Not connected")
+        self.clear_direction()
+
+    def clear_direction(self):
+        self.up_box.set_off()
+        self.down_box.set_off()
+        self.left_box.set_off()
+        self.right_box.set_off()
+        self.center_box.set_off()
+
+    def set_direction(self, direction):
+        self.clear_direction()
+
+        if direction == "UP":
+            self.up_box.set_on()
+        elif direction == "DOWN":
+            self.down_box.set_on()
+        elif direction == "LEFT":
+            self.left_box.set_on()
+        elif direction == "RIGHT":
+            self.right_box.set_on()
+        else:
+            self.center_box.set_on()
+
+        self.dir_card.set_value(direction)
+
+    def read_serial(self):
+        if not self.serial_port or not self.serial_port.is_open:
+            return
+
+        try:
+            while self.serial_port.in_waiting:
+                line = self.serial_port.readline().decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+
+                if line.startswith("X:") and "Y:" in line:
+                    parts = line.replace("X:", "").replace("Y:", "").split()
+                    if len(parts) >= 2:
+                        self.x_value = int(parts[0])
+                        self.y_value = int(parts[1])
+
+                        self.x_card.set_value(str(self.x_value))
+                        self.y_card.set_value(str(self.y_value))
+                        self.visual.update_values(self.x_value, self.y_value)
+
+                        self.sample_counter += 1
+                        now = time.time()
+                        elapsed = now - self.last_rate_time
+                        if elapsed >= 1.0:
+                            self.sample_rate = self.sample_counter
+                            self.rate_card.set_value(f"{self.sample_rate} Hz")
+                            self.sample_counter = 0
+                            self.last_rate_time = now
+
+                        # Optional center detection for nicer UI
+                        if 300 <= self.x_value <= 700 and 300 <= self.y_value <= 700:
+                            self.set_direction("CENTER")
+
+                elif line in ("UP", "DOWN", "LEFT", "RIGHT"):
+                    self.set_direction(line)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Read Error", str(e))
+            self.stop_test()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setFont(QFont("Arial", 10))
+    window = JoystickTester()
+    window.show()
+    sys.exit(app.exec())
